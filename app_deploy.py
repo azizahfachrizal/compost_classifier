@@ -2,11 +2,12 @@ import streamlit as st
 import torch
 import torch.nn as nn
 from torchvision import models, transforms
-from PIL import Image, ImageOps  # Added ImageOps to handle rotation
+from PIL import Image
 import torch.nn.functional as F
 import os
 
-# --- 1. MODEL DEFINITIONS (Keep your existing classes) ---
+# --- 1. MODEL DEFINITIONS ---
+
 class CompostCNN(nn.Module):
     def __init__(self, num_classes):
         super(CompostCNN, self).__init__()
@@ -41,17 +42,20 @@ NORM_2 = {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]}
 # --- 3. MODEL LOADING LOGIC ---
 @st.cache_resource
 def load_selected_model(model_choice):
+    # Streamlit Cloud uses CPU by default
     device = torch.device("cpu") 
     
+    # PATH FIX: Ensure these match your GitHub folder structure exactly
     if model_choice == "MobileNetV3":
         model = CompostMOBILENET(len(CLASS_NAMES))
         weight_file = "models/v4_25epochs/compost_mobilenet_model.pth"
         norm = NORM_2
-    else:
+    else: # Custom CNN
         model = CompostCNN(len(CLASS_NAMES))
         weight_file = "models/v4_25epochs/compost_cnn_model.pth"
         norm = NORM_1
 
+    # Check if file exists to prevent crash
     if not os.path.exists(weight_file):
         st.error(f"File not found: {weight_file}. Check your GitHub folder structure!")
         st.stop()
@@ -62,61 +66,52 @@ def load_selected_model(model_choice):
     return model, device, norm
 
 # --- 4. UI SETUP ---
-st.set_page_config(page_title="Compost Classifier", layout="centered") # Centered is better for mobile
+st.set_page_config(page_title="Compost Model Selector", layout="wide")
 st.sidebar.title("Settings")
-model_option = st.sidebar.selectbox("Select Model:", ("MobileNetV3", "Custom CNN"))
+model_option = st.sidebar.selectbox(
+    "Select Model to Use:",
+    ("MobileNetV3", "Custom CNN")
+)
 
-st.title("🌱 Compost Maturity")
+st.title("🌱 Compost Maturity Classifier")
+st.write(f"Currently using: **{model_option}**")
 
-# --- 5. MOBILE-FRIENDLY INPUT ---
-# Use tabs to separate Upload and Camera for a cleaner mobile UI
-tab1, tab2 = st.tabs(["📁 Upload Image", "📸 Take Photo"])
+# Main Application Logic
+try:
+    model, device, norm_values = load_selected_model(model_option)
+    
+    uploaded_file = st.file_uploader("Upload Compost Image", type=["jpg", "png", "jpeg"])
 
-uploaded_file = None
-
-with tab1:
-    file_input = st.file_uploader("Browse files", type=["jpg", "png", "jpeg"])
-    if file_input:
-        uploaded_file = file_input
-
-with tab2:
-    camera_input = st.camera_input("Take a picture of your compost")
-    if camera_input:
-        uploaded_file = camera_input
-
-# --- 6. PREDICTION LOGIC ---
-if uploaded_file:
-    try:
-        model, device, norm_values = load_selected_model(model_option)
-        
-        # Open and fix mobile rotation (EXIF)
+    if uploaded_file:
         image = Image.open(uploaded_file).convert('RGB')
-        image = ImageOps.exif_transpose(image) 
         
-        st.image(image, caption='Target Image', use_container_width=True)
-        
-        # Preprocessing
-        transform = transforms.Compose([
-            transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=norm_values["mean"], std=norm_values["std"])
-        ])
-        
-        input_tensor = transform(image).unsqueeze(0).to(device)
-        
-        with torch.no_grad():
-            output = model(input_tensor)
-            prob = F.softmax(output, dim=1)
-            conf, pred = torch.max(prob, 1)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.image(image, caption='Input Image', use_container_width=True)
             
-        label = CLASS_NAMES[pred.item()]
-        confidence = conf.item() * 100
-        
-        # Visual Results
-        st.divider()
-        st.subheader(f"Prediction: {label.upper()}")
-        st.progress(confidence / 100)
-        st.write(f"Confidence: **{confidence:.2f}%**")
+        with col2:
+            if st.button('Predict'):
+                # Preprocessing
+                transform = transforms.Compose([
+                    transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=norm_values["mean"], std=norm_values["std"])
+                ])
+                
+                input_tensor = transform(image).unsqueeze(0).to(device)
+                
+                with torch.no_grad():
+                    output = model(input_tensor)
+                    prob = F.softmax(output, dim=1)
+                    conf, pred = torch.max(prob, 1)
+                    
+                label = CLASS_NAMES[pred.item()]
+                confidence = conf.item() * 100
+                
+                st.subheader("Prediction Details")
+                st.metric("Result", label.upper())
+                st.metric("Confidence", f"{confidence:.2f}%")
+                st.progress(confidence / 100)
 
-    except Exception as e:
-        st.error(f"Error: {e}")
+except Exception as e:
+    st.error(f"An unexpected error occurred: {e}")
